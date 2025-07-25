@@ -42,12 +42,13 @@ import (
 type SmartContract struct {
 }
 
-// Define the car structure, with 4 properties.  Structure tags are used by encoding/json library
+// Define the car structure, with 5 properties.  Structure tags are used by encoding/json library
 type Car struct {
 	Make   string `json:"make"`
 	Model  string `json:"model"`
 	Colour string `json:"colour"`
 	Owner  string `json:"owner"`
+	Year   int    `json:"year"`
 }
 
 /*
@@ -77,6 +78,12 @@ func (s *SmartContract) Invoke(APIstub shim.ChaincodeStubInterface) sc.Response 
 		return s.queryAllCars(APIstub)
 	} else if function == "changeCarOwner" {
 		return s.changeCarOwner(APIstub, args)
+	} else if function == "changeCarColor" {
+		return s.changeCarColor(APIstub, args)
+	} else if function == "queryCarHistory" {
+		return s.queryCarHistory(APIstub, args)
+	} else if function == "deleteCar" {
+		return s.deleteCar(APIstub, args)
 	}
 
 	return shim.Error("Invalid Smart Contract function name.")
@@ -120,11 +127,17 @@ func (s *SmartContract) initLedger(APIstub shim.ChaincodeStubInterface) sc.Respo
 
 func (s *SmartContract) createCar(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
 
-	if len(args) != 5 {
-		return shim.Error("Incorrect number of arguments. Expecting 5")
+	if len(args) != 6 {
+		return shim.Error("Incorrect number of arguments. Expecting 6")
 	}
 
-	var car = Car{Make: args[1], Model: args[2], Colour: args[3], Owner: args[4]}
+	year, err := strconv.Atoi(args[5])
+
+	if err != nil {
+		return shim.Error("Year must be a numeric value")
+	}
+
+	var car = Car{Make: args[1], Model: args[2], Colour: args[3], Owner: args[4], Year: year}
 
 	carAsBytes, _ := json.Marshal(car)
 	APIstub.PutState(args[0], carAsBytes)
@@ -143,7 +156,6 @@ func (s *SmartContract) queryAllCars(APIstub shim.ChaincodeStubInterface) sc.Res
 	}
 	defer resultsIterator.Close()
 
-	// buffer is a JSON array containing QueryResults
 	var buffer bytes.Buffer
 	buffer.WriteString("[")
 
@@ -153,8 +165,8 @@ func (s *SmartContract) queryAllCars(APIstub shim.ChaincodeStubInterface) sc.Res
 		if err != nil {
 			return shim.Error(err.Error())
 		}
-		// Add a comma before array members, suppress it for the first array member
-		if bArrayMemberAlreadyWritten == true {
+
+		if bArrayMemberAlreadyWritten {
 			buffer.WriteString(",")
 		}
 		buffer.WriteString("{\"Key\":")
@@ -163,7 +175,6 @@ func (s *SmartContract) queryAllCars(APIstub shim.ChaincodeStubInterface) sc.Res
 		buffer.WriteString("\"")
 
 		buffer.WriteString(", \"Record\":")
-		// Record is a JSON object, so we write as-is
 		buffer.WriteString(string(queryResponse.Value))
 		buffer.WriteString("}")
 		bArrayMemberAlreadyWritten = true
@@ -181,14 +192,112 @@ func (s *SmartContract) changeCarOwner(APIstub shim.ChaincodeStubInterface, args
 		return shim.Error("Incorrect number of arguments. Expecting 2")
 	}
 
-	carAsBytes, _ := APIstub.GetState(args[0])
+	key := args[0]
+
+	carAsBytes, _ := APIstub.GetState(key)
 	car := Car{}
 
 	json.Unmarshal(carAsBytes, &car)
 	car.Owner = args[1]
 
 	carAsBytes, _ = json.Marshal(car)
-	APIstub.PutState(args[0], carAsBytes)
+	APIstub.PutState(key, carAsBytes)
+
+	return shim.Success(nil)
+}
+
+func (s *SmartContract) changeCarColor(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
+
+	if len(args) != 2 {
+		return shim.Error("Incorrect number of arguments. Expecting 2")
+	}
+
+	key := args[0]
+
+	carAsBytes, _ := APIstub.GetState(key)
+	car := Car{}
+
+	json.Unmarshal(carAsBytes, &car)
+	car.Colour = args[1]
+
+	carAsBytes, _ = json.Marshal(car)
+	APIstub.PutState(key, carAsBytes)
+
+	return shim.Success(nil)
+}
+
+func (s *SmartContract) queryCarHistory(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
+
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
+	}
+
+	key := args[0]
+
+	carHistoryIterator, err := APIstub.GetHistoryForKey(key)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	defer carHistoryIterator.Close()
+
+	var buffer bytes.Buffer
+	buffer.WriteString("[")
+
+	bArrayMemberAlreadyWritten := false
+	for carHistoryIterator.HasNext() {
+		queryResponse, err := carHistoryIterator.Next()
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		if bArrayMemberAlreadyWritten {
+			buffer.WriteString(",")
+		}
+		buffer.WriteString("{\"TxId\":")
+		buffer.WriteString("\"")
+		buffer.WriteString(queryResponse.TxId)
+		buffer.WriteString("\"")
+
+		buffer.WriteString(", \"Value\":")
+		if queryResponse.Value == nil {
+			buffer.WriteString("null")
+		} else {
+			buffer.WriteString(string(queryResponse.Value))
+		}
+
+		buffer.WriteString(", \"Timestamp\":")
+		buffer.WriteString("\"")
+		buffer.WriteString(queryResponse.Timestamp.String())
+		buffer.WriteString("\"")
+
+		buffer.WriteString(", \"IsDelete\":")
+		buffer.WriteString("\"")
+		buffer.WriteString(strconv.FormatBool(queryResponse.IsDelete))
+		buffer.WriteString("\"")
+
+		buffer.WriteString("}")
+		bArrayMemberAlreadyWritten = true
+	}
+	buffer.WriteString("]")
+
+	fmt.Printf("- getHistoryForCar returning:\n%s\n", buffer.String())
+
+	return shim.Success(buffer.Bytes())
+}
+
+func (s *SmartContract) deleteCar(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
+
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
+	}
+
+	key := args[0]
+
+	carAsBytes, _ := APIstub.GetState(key)
+	if carAsBytes == nil {
+		return shim.Error("Could not locate car")
+	}
+
+	APIstub.DelState(key)
 
 	return shim.Success(nil)
 }
